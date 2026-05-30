@@ -1,100 +1,180 @@
-from __future__ import annotations
-from abc import ABC
-from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, Field
-import uuid
+"""
+Core message types for agent communication using Pydantic models.
 
-class Message(BaseModel, ABC):
-    """The base class for all messages in the system.
-    
-    Every message must have a 'source' that identifies who sent it.
-    The 'metadata' field carries extra information (timestamps, session IDs, etc.)
-    without polluting the core message structure.
-    """
-    source: str = Field(description="Who sent this message: 'user', 'assistant', an agent name, or a tool name")
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+This module defines the structured message types that agents use to communicate
+with each other and with LLMs, following the OpenAI API format.
+"""
+
+from datetime import datetime
+from typing import Any, Dict, List, Literal, Optional, Union, TYPE_CHECKING
+
+from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from .types import Usage
+
+
+class BaseMessage(BaseModel):
+    """Base class for all message types."""
+
+    content: str = Field(..., description="The message content")
+    source: str = Field(
+        ..., description="Source of the message (agent name, system, user, etc.)"
+    )
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="When the message was created"
+    )
 
     class Config:
-        arbitrary_types_allowed = True
+        frozen = True
 
-class SystemMessage(Message):
-    """Developer instructions to the model.
-    
-    IMPORTANT: System messages are never shown to users.
-    They are internal configuration for the LLM.
-    Examples: "You are a haiku poet.", "You are a code reviewer."
-    """
-    role: str = "system"
-    content: str
+    def __str__(self) -> str:
+        """Returns a user-friendly string representation."""
+        time_str = self.timestamp.strftime("%H:%M:%S")
+        return f"[{self.source}] {time_str} | {self.content}"
 
-class UserMessage(Message):
-    """Input from a human user OR from an orchestrator.
-    
-    'content' can be a string for text-only input,
-    or a List for multimodal input (text + images, text + audio, etc.).
-    In practice, you start with strings and add multimodal later.
-    """
-    role: str = "user"
-    content: Union[str, List[Any]]
+    def __repr__(self) -> str:
+        """Returns an unambiguous, developer-friendly representation."""
+        class_name = self.__class__.__name__
+        return f"{class_name}(source='{self.source}', content='{self.content[:50]}...', timestamp='{self.timestamp}')"
 
-class AssistantMessage(Message):
-    """The model's response.
-    
-    There are TWO possible states for an AssistantMessage:
-    
-    State 1 — Text response: 'content' is a string, 'tool_calls' is None.
-    This means the model has a final answer to give back.
-    
-    State 2 — Tool call request: 'content' is None (or empty), 'tool_calls' is a list.
-    This means the model wants to DO something before answering.
-    It is your framework's job to execute those tool calls and send back the results.
-    
-    Your agent execution loop must handle BOTH states.
-    State 2 is what makes agents powerful — the model can request information or actions.
-    """
-    role: str = "assistant"
-    content: Optional[str] = None
-    tool_calls: Optional[List["ToolCallRequest"]] = None
+
+class SystemMessage(BaseMessage):
+    """System message containing instructions/role definition for the agent."""
+
+    role: Literal["system"] = Field(default="system", description="Message role")
+
+
+class UserMessage(BaseMessage):
+    """User message containing input from human or external system."""
+
+    role: Literal["user"] = Field(default="user", description="Message role")
+    name: Optional[str] = Field(default=None, description="Optional name of the user")
+
 
 class ToolCallRequest(BaseModel):
-    """A structured request from the model to execute a tool.
-    
-    'call_id' is a unique identifier. When you send back the result,
-    it must include this same ID so the model knows which call produced which result.
-    
-    'tool_name' is the name of the function the model wants to call.
-    'parameters' are the arguments it wants to pass.
-    
-    This is the bridge between "the model wants to do something"
-    and "the framework actually does it."
-    """
-    call_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    tool_name: str
-    parameters: Dict[str, Any] = Field(default_factory=dict)
+    """Structured representation of an LLM's tool call request."""
 
-class ToolMessage(Message):
-    """The result of executing a tool.
-    
-    'tool_call_id' MUST match the 'call_id' from the ToolCallRequest
-    that triggered this execution. This is how the model knows
-    "the result of my weather call was: Paris is sunny."
-    
-    'success' and 'error' let you handle failures gracefully.
-    The model can see that a tool failed and try a different approach.
-    """
-    role: str = "tool"
-    content: str
-    tool_call_id: str   # Must match ToolCallRequest.call_id
-    tool_name: str = ""
-    success: bool = True
-    error: Optional[str] = None
+    tool_name: str = Field(..., description="Name of the tool to call")
+    parameters: Dict[str, Any] = Field(..., description="Arguments for the tool")
+    call_id: str = Field(..., description="Unique identifier for this call")
+
+    class Config:
+        frozen = True
 
 
-class StopMessage(BaseModel):
-    """Signals that an orchestration should stop.
-    
-    'content' is a human-readable explanation of why we stopped.
-    'source' identifies which termination condition triggered the stop.
-    """
-    content: str
-    source: str
+class AssistantMessage(BaseMessage):
+    """Assistant message containing response from the agent/LLM."""
+
+    role: Literal["assistant"] = Field(default="assistant", description="Message role")
+    tool_calls: Optional[List[ToolCallRequest]] = Field(
+        default=None, description="Tool calls made by the assistant"
+    )
+    structured_content: Optional[BaseModel] = Field(
+        default=None, description="Structured data when output_format is used"
+    )
+    usage: Optional["Usage"] = Field(
+        default=None, description="Token usage for this LLM call"
+    )
+
+    def __str__(self) -> str:
+        """Returns a user-friendly string representation."""
+        time_str = self.timestamp.strftime("%H:%M:%S")
+
+        if self.tool_calls:
+            # Show tool calls information
+            tool_info = ", ".join(
+                [
+                    f"{tc.tool_name}({', '.join(f'{k}={v}' for k, v in tc.parameters.items())})"
+                    for tc in self.tool_calls
+                ]
+            )
+            if self.content and self.content.strip():
+                return (
+                    f"[{self.source}] {time_str} | {self.content} [tools: {tool_info}]"
+                )
+            else:
+                return f"[{self.source}] {time_str} | [calling tools: {tool_info}]"
+        else:
+            return f"[{self.source}] {time_str} | {self.content}"
+
+
+class ToolMessage(BaseMessage):
+    """Tool message containing result from tool execution."""
+
+    role: Literal["tool"] = Field(default="tool", description="Message role")
+    tool_call_id: str = Field(
+        ..., description="ID of the tool call this is responding to"
+    )
+    tool_name: str = Field(..., description="Name of the tool that was executed")
+    success: bool = Field(..., description="Whether tool execution succeeded")
+    error: Optional[str] = Field(default=None, description="Error message if failed")
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Tool-specific metadata (e.g. sub-agent usage)"
+    )
+
+
+class MultiModalMessage(BaseMessage):
+    """Message supporting multiple content types (text, images, audio, etc.)."""
+
+    role: Literal["user", "assistant"] = Field(..., description="Message role")
+    mime_type: str = Field(
+        ...,
+        description="MIME type of the content (e.g., 'text/plain', 'image/jpeg', 'audio/wav', 'video/mp4')",
+    )
+    data: Optional[Union[bytes, str]] = Field(
+        default=None, description="Binary data (bytes) or base64 string for the content"
+    )
+    media_url: Optional[str] = Field(
+        default=None, description="URL to media content if data is not provided"
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict, description="Additional content metadata"
+    )
+
+    @model_validator(mode="after")
+    def validate_media_data(self):
+        """Ensure either data or media_url is provided."""
+        if self.data is None and self.media_url is None:
+            raise ValueError("Either 'data' or 'media_url' must be provided")
+
+        if self.data is not None and self.media_url is not None:
+            raise ValueError("Only one of 'data' or 'media_url' should be provided")
+
+        return self
+
+    def is_text(self) -> bool:
+        """Check if this is a text message."""
+        return self.mime_type.startswith("text/")
+
+    def is_image(self) -> bool:
+        """Check if this is an image message."""
+        return self.mime_type.startswith("image/")
+
+    def is_audio(self) -> bool:
+        """Check if this is an audio message."""
+        return self.mime_type.startswith("audio/")
+
+    def is_video(self) -> bool:
+        """Check if this is a video message."""
+        return self.mime_type.startswith("video/")
+
+    def to_base64(self) -> Optional[str]:
+        """Convert data to base64 string for API usage."""
+        if self.data is None:
+            return None
+
+        # If data is already a string, assume it's base64
+        if isinstance(self.data, str):
+            return self.data
+
+        # If data is bytes, encode to base64
+        import base64
+
+        return base64.b64encode(self.data).decode("utf-8")
+
+
+# Union type for all message types
+Message = Union[
+    SystemMessage, UserMessage, AssistantMessage, ToolMessage, MultiModalMessage
+]

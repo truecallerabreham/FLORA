@@ -1,199 +1,607 @@
-from __future__ import annotations
+"""
+Memory tool implementation for Forla.
+
+Provides file-based memory storage similar to Anthropic's memory tool,
+allowing agents to store and retrieve information across conversations.
+"""
+
 from pathlib import Path
-from typing import Any, Dict
-from ._base import BaseTool, ToolResult
+from typing import Any, Dict, List, Optional, Union
+
+from ..types import ToolResult
+from ._base import ApprovalMode, BaseTool
 
 
 class MemoryBackend:
-    """Sandboxed file operations for agent memory storage.
-    
-    CRITICAL SECURITY REQUIREMENT: All paths are validated to stay within
-    the base_path directory. Without this, an agent (or injected content)
-    could try to access files outside the memory sandbox with paths like
-    '../../../../etc/passwd'. This is a real attack vector called
-    "directory traversal" or "path traversal."
-    
-    The _validate_path() method prevents this by:
-    1. Resolving the path to its absolute form
-    2. Checking it is still within base_path
-    3. Raising an error if it has escaped
-    """
+    """File-based memory storage backend with security controls."""
 
-    def __init__(self, base_path: Path):
-        # .resolve() converts to absolute path and resolves symlinks
-        self.base_path = base_path.resolve()
+    def __init__(self, base_path: Union[str, Path] = "./memories"):
+        """
+        Initialize memory backend.
+
+        Args:
+            base_path: Root directory for memory storage
+        """
+        self.base_path = Path(base_path).resolve()
         self.base_path.mkdir(parents=True, exist_ok=True)
 
     def _validate_path(self, path: str) -> Path:
-        """Prevent directory traversal attacks."""
-        # Strip leading slash, join with base
-        clean = path.lstrip("/")
-        full_path = (self.base_path / clean).resolve()
-        
+        """
+        Validate and resolve a memory path.
+
+        Args:
+            path: Path to validate (should start with /memories or be relative)
+
+        Returns:
+            Resolved Path object
+
+        Raises:
+            ValueError: If path is invalid or attempts traversal attack
+        """
+        # Normalize path (remove /memories prefix if present)
+        if path.startswith("/memories"):
+            path = path[len("/memories") :]
+        path = path.lstrip("/")
+
+        # Resolve to absolute path
+        full_path = (self.base_path / path).resolve()
+
+        # Security: Ensure path is within base_path
         try:
-            # relative_to() raises ValueError if full_path is not inside base_path
             full_path.relative_to(self.base_path)
         except ValueError:
             raise ValueError(
-                f"Access denied: path '{path}' would escape the memory directory"
+                f"Access denied: path '{path}' is outside memory directory"
             )
-        
+
         return full_path
 
-    def view(self, path: str) -> str:
-        """Read a file or list a directory's contents."""
-        target = self._validate_path(path)
-        
-        if target.is_dir():
-            items = sorted(target.iterdir())
+    def view(
+        self, path: str, view_range: Optional[List[int]] = None
+    ) -> str:
+        """
+        View directory contents or file contents.
+
+        Args:
+            path: Path to view
+            view_range: Optional [start_line, end_line] for file viewing
+
+        Returns:
+            String representation of directory listing or file contents
+        """
+        full_path = self._validate_path(path)
+
+        # Directory listing
+        if full_path.is_dir():
+            contents = []
+            contents.append(f"Directory: {path}")
+            items = sorted(full_path.iterdir(), key=lambda x: x.name)
+
             if not items:
-                return f"Directory '{path}' is empty."
-            lines = []
-            for item in items:
-                prefix = "[DIR] " if item.is_dir() else "[FILE]"
-                lines.append(f"{prefix} {item.name}")
-            return "\n".join(lines)
-        
-        elif target.is_file():
-            return target.read_text(encoding="utf-8")
-        
-        else:
-            return f"Path '{path}' does not exist."
+                contents.append("(empty)")
+            else:
+                for item in items:
+                    prefix = "  - "
+                    suffix = "/" if item.is_dir() else ""
+                    contents.append(f"{prefix}{item.name}{suffix}")
+
+            return "\n".join(contents)
+
+        # File contents
+        if full_path.is_file():
+            content = full_path.read_text(encoding="utf-8")
+            lines = content.splitlines()
+
+            # Apply line range if specified
+            if view_range:
+                start, end = view_range
+                start = max(1, start)  # Line numbers are 1-indexed
+                end = min(len(lines), end)
+                lines = lines[start - 1 : end]
+                # Add line numbers
+                numbered_lines = [
+                    f"{i + start:5d}: {line}"
+                    for i, line in enumerate(lines)
+                ]
+                return "\n".join(numbered_lines)
+
+            # Return full file with line numbers
+            numbered_lines = [
+                f"{i + 1:5d}: {line}" for i, line in enumerate(lines)
+            ]
+            return "\n".join(numbered_lines)
+
+        # Path doesn't exist
+        raise FileNotFoundError(f"Path not found: {path}")
 
     def create(self, path: str, file_text: str) -> str:
-        """Create a new file with the given content."""
-        target = self._validate_path(path)
-        
-        if target.exists():
-            return f"Error: '{path}' already exists. Use str_replace to modify it."
-        
-        # Create parent directories if needed
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(file_text, encoding="utf-8")
-        return f"Created '{path}' ({len(file_text)} characters)."
+        """
+        Create or overwrite a file.
 
-    def str_replace(self, path: str, old_str: str, new_str: str) -> str:
-        """Replace a unique string within a file."""
-        target = self._validate_path(path)
-        
-        if not target.is_file():
-            return f"Error: '{path}' is not a file."
-        
-        content = target.read_text(encoding="utf-8")
-        
+        Args:
+            path: Path to file
+            file_text: Content to write
+
+        Returns:
+            Success message
+        """
+        full_path = self._validate_path(path)
+
+        # Create parent directories if needed
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write file
+        full_path.write_text(file_text, encoding="utf-8")
+
+        return f"File created successfully at {path}"
+
+    def str_replace(
+        self, path: str, old_str: str, new_str: str
+    ) -> str:
+        """
+        Replace text in a file.
+
+        Args:
+            path: Path to file
+            old_str: Text to find
+            new_str: Replacement text
+
+        Returns:
+            Success message
+        """
+        full_path = self._validate_path(path)
+
+        if not full_path.is_file():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        content = full_path.read_text(encoding="utf-8")
+
         if old_str not in content:
-            return f"Error: The string to replace was not found in '{path}'."
-        
-        count = content.count(old_str)
-        if count > 1:
-            return (
-                f"Error: The string appears {count} times in '{path}'. "
-                f"Be more specific to avoid ambiguity."
+            raise ValueError(
+                f"Text not found in file: '{old_str[:50]}...'"
             )
-        
-        target.write_text(content.replace(old_str, new_str, 1), encoding="utf-8")
-        return f"Successfully replaced in '{path}'."
+
+        new_content = content.replace(old_str, new_str, 1)
+        full_path.write_text(new_content, encoding="utf-8")
+
+        return f"File {path} has been edited successfully"
+
+    def insert(
+        self, path: str, insert_line: int, insert_text: str
+    ) -> str:
+        """
+        Insert text at a specific line.
+
+        Args:
+            path: Path to file
+            insert_line: Line number to insert at (1-indexed)
+            insert_text: Text to insert
+
+        Returns:
+            Success message
+        """
+        full_path = self._validate_path(path)
+
+        if not full_path.is_file():
+            raise FileNotFoundError(f"File not found: {path}")
+
+        lines = full_path.read_text(encoding="utf-8").splitlines(
+            keepends=True
+        )
+
+        # Ensure insert_text ends with newline
+        if not insert_text.endswith('\n'):
+            insert_text += '\n'
+
+        # Insert at specified line (1-indexed)
+        insert_line = max(1, min(insert_line, len(lines) + 1))
+        lines.insert(insert_line - 1, insert_text)
+
+        full_path.write_text("".join(lines), encoding="utf-8")
+
+        return f"Text inserted at line {insert_line} in {path}"
 
     def delete(self, path: str) -> str:
-        """Delete a file."""
-        target = self._validate_path(path)
-        
-        if target.is_file():
-            target.unlink()
-            return f"Deleted '{path}'."
-        elif target.is_dir():
-            return f"Error: '{path}' is a directory. Delete files individually."
-        else:
-            return f"Error: '{path}' does not exist."
+        """
+        Delete a file or directory.
+
+        Args:
+            path: Path to delete
+
+        Returns:
+            Success message
+        """
+        full_path = self._validate_path(path)
+
+        if not full_path.exists():
+            raise FileNotFoundError(f"Path not found: {path}")
+
+        if full_path.is_file():
+            full_path.unlink()
+            return f"File deleted: {path}"
+        elif full_path.is_dir():
+            # Remove directory (must be empty for safety)
+            if any(full_path.iterdir()):
+                raise ValueError(
+                    f"Directory not empty: {path}. "
+                    "Delete contents first."
+                )
+            full_path.rmdir()
+            return f"Directory deleted: {path}"
+
+    def rename(self, old_path: str, new_path: str) -> str:
+        """
+        Rename or move a file/directory.
+
+        Args:
+            old_path: Current path
+            new_path: New path
+
+        Returns:
+            Success message
+        """
+        old_full_path = self._validate_path(old_path)
+        new_full_path = self._validate_path(new_path)
+
+        if not old_full_path.exists():
+            raise FileNotFoundError(f"Path not found: {old_path}")
+
+        if new_full_path.exists():
+            raise ValueError(f"Destination already exists: {new_path}")
+
+        # Create parent directories for destination
+        new_full_path.parent.mkdir(parents=True, exist_ok=True)
+
+        old_full_path.rename(new_full_path)
+
+        return f"Renamed {old_path} to {new_path}"
+
+    def search(self, query: str, path: str = "/memories") -> str:
+        """
+        Search for text across memory files.
+
+        Args:
+            query: Text to search for (case-insensitive)
+            path: Directory to search in (default: /memories)
+
+        Returns:
+            Formatted string with search results
+        """
+        full_path = self._validate_path(path)
+
+        if not full_path.exists():
+            raise FileNotFoundError(f"Path not found: {path}")
+
+        if not full_path.is_dir():
+            raise ValueError(f"Path must be a directory: {path}")
+
+        matches = []
+        query_lower = query.lower()
+
+        # Search all files recursively
+        for file_path in full_path.rglob("*"):
+            if file_path.is_file():
+                try:
+                    content = file_path.read_text(encoding="utf-8")
+                    lines = content.splitlines()
+
+                    for line_num, line in enumerate(lines, 1):
+                        if query_lower in line.lower():
+                            rel_path = file_path.relative_to(self.base_path)
+                            matches.append({
+                                "file": str(rel_path),
+                                "line": line_num,
+                                "content": line.strip()
+                            })
+                except (UnicodeDecodeError, PermissionError):
+                    # Skip files that can't be read
+                    continue
+
+        if not matches:
+            return f"No matches found for '{query}' in {path}"
+
+        # Format results
+        result_lines = [f"Found {len(matches)} match(es) for '{query}':\n"]
+        for match in matches[:50]:  # Limit to 50 results
+            result_lines.append(
+                f"  {match['file']}:{match['line']} - {match['content'][:80]}"
+            )
+
+        if len(matches) > 50:
+            result_lines.append(f"\n... and {len(matches) - 50} more matches")
+
+        return "\n".join(result_lines)
+
+    def append(self, path: str, text: str) -> str:
+        """
+        Append text to the end of a file.
+
+        Args:
+            path: Path to file
+            text: Text to append
+
+        Returns:
+            Success message
+        """
+        full_path = self._validate_path(path)
+
+        # Create file if it doesn't exist
+        if not full_path.exists():
+            full_path.parent.mkdir(parents=True, exist_ok=True)
+            full_path.write_text("", encoding="utf-8")
+
+        # Ensure text starts with newline if file isn't empty
+        if full_path.stat().st_size > 0:
+            existing_content = full_path.read_text(encoding="utf-8")
+            if existing_content and not existing_content.endswith('\n'):
+                text = '\n' + text
+
+        # Ensure text ends with newline
+        if not text.endswith('\n'):
+            text += '\n'
+
+        # Append to file
+        with full_path.open('a', encoding='utf-8') as f:
+            f.write(text)
+
+        return f"Text appended to {path}"
 
 
 class MemoryTool(BaseTool):
-    """File-system memory for agents that need to learn across sessions.
-    
-    WHY this tool exists:
-    Sometimes you want the AGENT to decide what to remember — not the application.
-    A code reviewer that discovers a critical bug pattern should actively store it,
-    organize it in its knowledge base, and retrieve it in future reviews.
-    
-    This tool gives the agent file-system operations (view, create, str_replace, delete)
-    within a sandboxed directory. The agent can organize its memory however it wants:
-    directories for different topics, markdown files for notes, etc.
-    
-    HOW the agent uses it:
-    The agent's instructions should include something like:
-    "ALWAYS check /memories on startup. Store important discoveries."
-    
-    On the first run, the agent creates memory files.
-    On subsequent runs (with a fresh context but the same file system),
-    it reads those files and applies the learned knowledge.
-    
-    This is different from BaseMemory (Part 6) which is application-managed.
+    """
+    Memory tool for storing and retrieving information across conversations.
+
+    Provides file-based operations similar to Anthropic's memory tool:
+    - view: Show directory/file contents
+    - create: Create or overwrite files
+    - str_replace: Edit file contents
+    - insert: Insert text at specific line
+    - delete: Remove files/directories
+    - rename: Rename or move files/directories
+    - search: Search for text across all files
+    - append: Append text to end of file
+
+    Example:
+        ```python
+        from forla import Agent
+        from forla.tools import MemoryTool
+
+        memory = MemoryTool(base_path="./agent_memory")
+
+        agent = Agent(
+            name="assistant",
+            instructions=(
+                "IMPORTANT: ALWAYS check your memory directory "
+                "at the start of each task using the memory tool. "
+                "Store important patterns and insights for future reference."
+            ),
+            model_client=client,
+            tools=[memory]
+        )
+        ```
     """
 
-    def __init__(self, base_path: str = "./agent_memory"):
+    def __init__(
+        self,
+        base_path: Union[str, Path] = "./memories",
+        approval_mode: ApprovalMode = ApprovalMode.NEVER,
+    ):
+        """
+        Initialize memory tool.
+
+        Args:
+            base_path: Root directory for memory storage
+            approval_mode: Whether to require approval for operations
+                          (NEVER = no approval, ALWAYS = require for all ops)
+        """
         super().__init__(
             name="memory",
             description=(
-                "Manage your persistent memory. "
-                "Commands: view (read file/directory), create (new file), "
-                "str_replace (edit file), delete (remove file). "
-                "ALWAYS check /memories at the start of every session."
+                "Store and retrieve information in memory files that "
+                "persist across conversations. Use this to remember "
+                "important patterns, insights, and context. "
+                "Operations: view (show directory/file), create (new file), "
+                "str_replace (edit file), insert (add text at line), "
+                "delete (remove file/dir), rename (move/rename file), "
+                "search (find text in files), append (add to end of file)."
             ),
+            version="1.0.0",
+            approval_mode=approval_mode,
         )
-        self._backend = MemoryBackend(Path(base_path))
+        self.backend = MemoryBackend(base_path)
 
     @property
     def parameters(self) -> Dict[str, Any]:
+        """JSON schema for memory tool parameters."""
         return {
             "type": "object",
             "properties": {
                 "command": {
                     "type": "string",
-                    "enum": ["view", "create", "str_replace", "delete"],
-                    "description": "The operation to perform",
+                    "enum": [
+                        "view",
+                        "create",
+                        "str_replace",
+                        "insert",
+                        "delete",
+                        "rename",
+                        "search",
+                        "append",
+                    ],
+                    "description": "Operation to perform",
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory path (e.g., '/memories' or '/memories/bugs/race_condition.md')",
+                    "description": (
+                        "Path to file or directory "
+                        "(e.g., '/memories/notes.md' or 'patterns/bugs.xml')"
+                    ),
+                },
+                "view_range": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 2,
+                    "maxItems": 2,
+                    "description": (
+                        "Optional [start_line, end_line] "
+                        "for viewing specific lines (1-indexed)"
+                    ),
                 },
                 "file_text": {
                     "type": "string",
-                    "description": "Content for the 'create' command",
+                    "description": (
+                        "Content to write when creating a file"
+                    ),
                 },
                 "old_str": {
                     "type": "string",
-                    "description": "Text to replace (for 'str_replace' command)",
+                    "description": "Text to find and replace",
                 },
                 "new_str": {
                     "type": "string",
-                    "description": "Replacement text (for 'str_replace' command)",
+                    "description": "Replacement text",
+                },
+                "insert_line": {
+                    "type": "integer",
+                    "description": (
+                        "Line number to insert text at (1-indexed)"
+                    ),
+                },
+                "insert_text": {
+                    "type": "string",
+                    "description": "Text to insert",
+                },
+                "old_path": {
+                    "type": "string",
+                    "description": "Current path (for rename operation)",
+                },
+                "new_path": {
+                    "type": "string",
+                    "description": "New path (for rename operation)",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query text (for search operation)",
+                },
+                "append_text": {
+                    "type": "string",
+                    "description": "Text to append (for append operation)",
                 },
             },
-            "required": ["command", "path"],
+            "required": ["command"],
         }
 
-    async def execute(self, parameters: Dict[str, Any]) -> ToolResult:
-        command = parameters.get("command")
-        path = parameters.get("path", "/")
-        
+    async def execute(
+        self, parameters: Dict[str, Any]
+    ) -> ToolResult:
+        """
+        Execute memory operation.
+
+        Args:
+            parameters: Operation parameters matching JSON schema
+
+        Returns:
+            ToolResult with operation outcome
+        """
+        command = parameters["command"]
+
         try:
             if command == "view":
-                result = self._backend.view(path)
+                path = parameters.get("path", "/memories")
+                view_range = parameters.get("view_range")
+                result = self.backend.view(path, view_range)
+                metadata = {
+                    "command": "view",
+                    "path": path,
+                    "lines": len(result.splitlines()),
+                }
+
             elif command == "create":
-                file_text = parameters.get("file_text", "")
-                result = self._backend.create(path, file_text)
+                path = parameters["path"]
+                file_text = parameters["file_text"]
+                result = self.backend.create(path, file_text)
+                metadata = {
+                    "command": "create",
+                    "path": path,
+                    "size": len(file_text),
+                }
+
             elif command == "str_replace":
-                old_str = parameters.get("old_str", "")
-                new_str = parameters.get("new_str", "")
-                result = self._backend.str_replace(path, old_str, new_str)
+                path = parameters["path"]
+                old_str = parameters["old_str"]
+                new_str = parameters["new_str"]
+                result = self.backend.str_replace(path, old_str, new_str)
+                metadata = {
+                    "command": "str_replace",
+                    "path": path,
+                }
+
+            elif command == "insert":
+                path = parameters["path"]
+                insert_line = parameters["insert_line"]
+                insert_text = parameters["insert_text"]
+                result = self.backend.insert(
+                    path, insert_line, insert_text
+                )
+                metadata = {
+                    "command": "insert",
+                    "path": path,
+                    "line": insert_line,
+                }
+
             elif command == "delete":
-                result = self._backend.delete(path)
+                path = parameters["path"]
+                result = self.backend.delete(path)
+                metadata = {"command": "delete", "path": path}
+
+            elif command == "rename":
+                old_path = parameters["old_path"]
+                new_path = parameters["new_path"]
+                result = self.backend.rename(old_path, new_path)
+                metadata = {
+                    "command": "rename",
+                    "old_path": old_path,
+                    "new_path": new_path,
+                }
+
+            elif command == "search":
+                query = parameters["query"]
+                path = parameters.get("path", "/memories")
+                result = self.backend.search(query, path)
+                metadata = {
+                    "command": "search",
+                    "query": query,
+                    "path": path,
+                }
+
+            elif command == "append":
+                path = parameters["path"]
+                append_text = parameters["append_text"]
+                result = self.backend.append(path, append_text)
+                metadata = {
+                    "command": "append",
+                    "path": path,
+                    "text_length": len(append_text),
+                }
+
             else:
-                return ToolResult(success=False, error=f"Unknown command: '{command}'")
-            
-            return ToolResult(success=True, result=result)
-        
-        except ValueError as e:
-            return ToolResult(success=False, error=str(e))
+                raise ValueError(f"Unknown command: {command}")
+
+            return ToolResult(
+                success=True,
+                result=result,
+                error=None,
+                metadata=metadata,
+            )
+
         except Exception as e:
-            return ToolResult(success=False, error=f"Memory operation failed: {e}")
+            return ToolResult(
+                success=False,
+                result=None,
+                error=f"Memory operation failed: {str(e)}",
+                metadata={"command": command},
+            )
+
+
+# Export
+__all__ = ["MemoryTool", "MemoryBackend"]

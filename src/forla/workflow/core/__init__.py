@@ -1,12 +1,59 @@
-from ._step import BaseStep, FunctionStep, StepMetadata, StepStatus, Context
-from ._edge import Edge, EdgeCondition
-from ._builder import Workflow, WorkflowMetadata
-from ._runner import WorkflowRunner, WorkflowStepStartEvent, WorkflowStepCompleteEvent, WorkflowCompleteEvent
+"""
+Core workflow engine components.
+"""
+
+from ._checkpoint import (
+    CheckpointConfig,
+    CheckpointMetadata,
+    CheckpointStore,
+    CheckpointValidationResult,
+    FileCheckpointStore,
+    InMemoryCheckpointStore,
+    WorkflowCheckpoint,
+)
+from ._models import (
+    Context,
+    Edge,
+    EdgeCondition,
+    InputType,
+    OutputType,
+    StepExecution,
+    StepMetadata,
+    StepStatus,
+    WorkflowExecution,
+    WorkflowMetadata,
+    WorkflowStatus,
+    WorkflowValidationResult,
+)
+from ._runner import WorkflowRunner
+from ._workflow import BaseWorkflow, Workflow, WorkflowConfig
 
 __all__ = [
-    "BaseStep", "FunctionStep", "StepMetadata", "StepStatus", "Context",
-    "Edge", "EdgeCondition",
-    "Workflow", "WorkflowMetadata",
+    # Workflow classes
+    "Workflow",
+    "BaseWorkflow",
+    "WorkflowConfig",
+    # Runner
     "WorkflowRunner",
-    "WorkflowStepStartEvent", "WorkflowStepCompleteEvent", "WorkflowCompleteEvent",
+    # Checkpoint classes
+    "WorkflowCheckpoint",
+    "CheckpointConfig",
+    "CheckpointStore",
+    "FileCheckpointStore",
+    "InMemoryCheckpointStore",
+    "CheckpointMetadata",
+    "CheckpointValidationResult",
+    # Models and types
+    "InputType",
+    "OutputType",
+    "StepStatus",
+    "WorkflowStatus",
+    "Edge",
+    "EdgeCondition",
+    "StepExecution",
+    "WorkflowExecution",
+    "StepMetadata",
+    "WorkflowMetadata",
+    "Context",
+    "WorkflowValidationResult",
 ]

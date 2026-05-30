@@ -1,32 +1,279 @@
-from .agents._agent import Agent
-from .agents._base import BaseAgent
-from .llm._openai import OpenAIChatCompletionClient
-from .llm._base import BaseChatCompletionClient
-from .messages import (
-    Message, UserMessage, AssistantMessage, SystemMessage,
-    ToolMessage, ToolCallRequest, StopMessage,
+"""
+Forla Framework
+
+A lightweight, type-safe framework for building AI agents with LLMs.
+Supports tool calling, memory, streaming, and multi-agent orchestration.
+"""
+
+# Auto-instrument with OpenTelemetry if enabled
+import os
+
+if os.getenv("FORLA_ENABLE_OTEL", "false").lower() in ("true", "1", "yes"):
+    try:
+        from ._otel import auto_instrument
+
+        auto_instrument()
+    except Exception:
+        pass  # Gracefully continue if instrumentation fails
+
+# Cancellation support
+from ._cancellation_token import CancellationToken
+
+# Component configuration system
+from ._component_config import (
+    Component,
+    ComponentBase,
+    ComponentFromConfig,
+    ComponentLoader,
+    ComponentModel,
+    ComponentSchemaType,
+    ComponentToConfig,
+    ComponentType,
 )
-from .context import AgentContext
-from .types import AgentResponse, CancellationToken, Usage
-from .tools._base import BaseTool, ToolResult
-from .tools._function_tool import FunctionTool
-from .tools._core_tools import ThinkTool, TaskStatusTool
-from .tools._memory_tool import MemoryTool
-from .memory._base import BaseMemory, MemoryContent
-from .memory._list_memory import ListMemory
-from .middleware._base import BaseMiddleware, MiddlewareContext
-from .middleware._chain import MiddlewareChain
-from .middleware._examples import LoggingMiddleware, SecurityMiddleware
+
+# Middleware system
+from ._middleware import (
+    BaseMiddleware,
+    GuardrailMiddleware,
+    LoggingMiddleware,
+    MetricsMiddleware,
+    MiddlewareChain,
+    MiddlewareContext,
+    PIIRedactionMiddleware,
+    RateLimitMiddleware,
+)
+
+# Instruction presets
+from ._instructions import get_instructions
+
+# Deterministic loop hooks
+from ._hooks import (
+    BaseEndHook,
+    BaseStartHook,
+    CompletionCheckHook,
+    CompositeTermination,
+    LLMCompletionCheckHook,
+    LoopContext,
+    MaxRestartsTermination,
+    PlanningHook,
+    TerminationCondition,
+)
+
+# Agent implementations
+from .agents import (
+    Agent,
+    AgentConfigurationError,
+    AgentError,
+    AgentExecutionError,
+    AgentToolError,
+    BaseAgent,
+)
+
+# Evaluation system
+from .eval import (
+    AgentEvalTarget,
+    EvalJudge,
+    EvalRunner,
+    LLMEvalJudge,
+    ModelEvalTarget,
+    OrchestratorEvalTarget,
+    Target,
+)
+
+# LLM clients
+from .llm import (
+    AuthenticationError,
+    BaseChatCompletionClient,
+    BaseChatCompletionError,
+    InvalidRequestError,
+    OpenAIChatCompletionClient,
+    RateLimitError,
+)
+
+# Memory system
+from .memory import BaseMemory, FileMemory, ListMemory, MemoryContent, MemoryQueryResult
+
+# Context system
+from .context import (
+    AgentContext,
+    ToolApprovalRequest,
+    ToolApprovalResponse,
+)
+
+# Compaction strategies
+from .compaction import (
+    CompactionStrategy,
+    HeadTailCompaction,
+    NoCompaction,
+    SlidingWindowCompaction,
+)
+
+# Core message types
+from .messages import (
+    AssistantMessage,
+    Message,
+    MultiModalMessage,
+    SystemMessage,
+    ToolCallRequest,
+    ToolMessage,
+    UserMessage,
+)
+
+# Orchestration patterns
+from .orchestration import (
+    BaseOrchestrator,
+    BaseTermination,
+    CancellationTermination,
+    CompositeTermination,
+    ExternalTermination,
+    FunctionCallTermination,
+    HandoffTermination,
+    MaxMessageTermination,
+    RoundRobinOrchestrator,
+    TextMentionTermination,
+    TimeoutTermination,
+    TokenUsageTermination,
+)
+
+# Tool system
+from .tools import ApprovalMode, BaseTool, FunctionTool, tool
+
+# Core data types
+from .types import (
+    AgentEvent,
+    AgentResponse,
+    ChatCompletionChunk,
+    ChatCompletionResult,
+    OrchestrationEvent,
+    OrchestrationResponse,
+    StopMessage,
+    ToolResult,
+    Usage,
+)
+
+# Workflow system
+from .workflow import (
+    BaseStep,
+    Context,
+    EchoStep,
+    FunctionStep,
+    HttpStep,
+    ForlaAgentStep,
+    StepMetadata,
+    TransformStep,
+    Workflow,
+    WorkflowMetadata,
+    WorkflowRunner,
+)
+
+__version__ = "0.4.0"
 
 __all__ = [
-    "Agent", "BaseAgent",
-    "OpenAIChatCompletionClient", "BaseChatCompletionClient",
-    "UserMessage", "AssistantMessage", "SystemMessage", "ToolMessage",
-    "ToolCallRequest", "StopMessage", "Message",
-    "AgentContext", "AgentResponse", "CancellationToken", "Usage",
-    "BaseTool", "ToolResult", "FunctionTool",
-    "ThinkTool", "TaskStatusTool", "MemoryTool",
-    "BaseMemory", "MemoryContent", "ListMemory",
-    "BaseMiddleware", "MiddlewareContext", "MiddlewareChain",
-    "LoggingMiddleware", "SecurityMiddleware",
+    # Context
+    "AgentContext",
+    "ToolApprovalRequest",
+    "ToolApprovalResponse",
+    # Compaction
+    "CompactionStrategy",
+    "HeadTailCompaction",
+    "SlidingWindowCompaction",
+    "NoCompaction",
+    # Messages
+    "Message",
+    "SystemMessage",
+    "UserMessage",
+    "AssistantMessage",
+    "ToolMessage",
+    "MultiModalMessage",
+    "ToolCallRequest",
+    # Types
+    "Usage",
+    "ToolResult",
+    "AgentResponse",
+    "ChatCompletionResult",
+    "ChatCompletionChunk",
+    "AgentEvent",
+    "StopMessage",
+    "OrchestrationResponse",
+    "OrchestrationEvent",
+    # Cancellation
+    "CancellationToken",
+    # Component Configuration
+    "ComponentModel",
+    "ComponentFromConfig",
+    "ComponentToConfig",
+    "ComponentSchemaType",
+    "ComponentLoader",
+    "ComponentBase",
+    "Component",
+    "ComponentType",
+    # Agents
+    "BaseAgent",
+    "Agent",
+    "AgentError",
+    "AgentExecutionError",
+    "AgentConfigurationError",
+    "AgentToolError",
+    # Tools
+    "BaseTool",
+    "FunctionTool",
+    "ApprovalMode",
+    "tool",
+    # Memory
+    "BaseMemory",
+    "MemoryContent",
+    "MemoryQueryResult",
+    "ListMemory",
+    "FileMemory",
+    # LLM
+    "BaseChatCompletionClient",
+    "BaseChatCompletionError",
+    "RateLimitError",
+    "AuthenticationError",
+    "InvalidRequestError",
+    "OpenAIChatCompletionClient",
+    # Orchestration
+    "BaseOrchestrator",
+    "RoundRobinOrchestrator",
+    "BaseTermination",
+    "MaxMessageTermination",
+    "TextMentionTermination",
+    "TokenUsageTermination",
+    "TimeoutTermination",
+    "HandoffTermination",
+    "ExternalTermination",
+    "CancellationTermination",
+    "FunctionCallTermination",
+    "CompositeTermination",
+    # Workflow system
+    "Workflow",
+    "WorkflowRunner",
+    "BaseStep",
+    "FunctionStep",
+    "EchoStep",
+    "HttpStep",
+    "TransformStep",
+    "ForlaAgentStep",
+    "WorkflowMetadata",
+    "StepMetadata",
+    "Context",
+    # Evaluation
+    "Target",
+    "EvalJudge",
+    "EvalRunner",
+    "AgentEvalTarget",
+    "ModelEvalTarget",
+    "OrchestratorEvalTarget",
+    "LLMEvalJudge",
+    # Instructions
+    "get_instructions",
+    # Middleware
+    "BaseMiddleware",
+    "MiddlewareContext",
+    "MiddlewareChain",
+    "LoggingMiddleware",
+    "RateLimitMiddleware",
+    "PIIRedactionMiddleware",
+    "GuardrailMiddleware",
+    "MetricsMiddleware",
 ]

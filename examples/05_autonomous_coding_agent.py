@@ -30,10 +30,11 @@ from typing import Any, Dict, List, Sequence
 
 from forla import Agent, OpenAIChatCompletionClient
 from forla.messages import AssistantMessage, ToolMessage
-from forla.middleware import LoggingMiddleware, SecurityMiddleware
 from forla.orchestration import OrchestrationResponse, RoundRobinOrchestrator
 from forla.termination import MaxMessageTermination, TextMentionTermination
-from forla.tools import BaseTool, MemoryTool, TaskStatusTool, ThinkTool, ToolResult
+from forla.tools import BaseTool, MemoryTool, TaskStatusTool, ThinkTool
+from forla.types import ToolResult
+from forla import GuardrailMiddleware, LoggingMiddleware
 
 
 class WorkspaceTool(BaseTool):
@@ -274,7 +275,7 @@ def build_agent(
         instructions=f"{TEAM_PROMPT}\n\nRole:\n{role_instructions}",
         model_client=client,
         tools=tools,
-        middlewares=[SecurityMiddleware(), LoggingMiddleware()],
+        middlewares=[GuardrailMiddleware(), LoggingMiddleware()],
         max_iterations=6,
     )
 
@@ -365,12 +366,12 @@ def seed_memory(memory_root: Path, task: str) -> None:
             encoding="utf-8",
         )
 
-    playbook = memories / "engineering_playbook.md"
-    if not playbook.exists():
-        playbook.write_text(
+    notes = memories / "engineering_notes.md"
+    if not notes.exists():
+        notes.write_text(
             textwrap.dedent(
                 """
-                # Engineering Playbook
+                # Engineering Notes
 
                 - Prefer small, testable diffs.
                 - Read before editing.

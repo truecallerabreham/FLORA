@@ -1,34 +1,188 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "forla"
-version = "0.1.0"
-description = "A multi-agent framework built from first principles"
+version = "0.4.0"
+description = "A transparent multi-agent framework for building AI agents, tools, workflows, and orchestration runtimes"
 readme = "README.md"
-requires-python = ">=3.11"
-
-# CORE: The absolute minimum required to run a basic agent
-# Notice how small this is — just 4 dependencies
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Forla Contributors" },
+]
+keywords = ["agents", "multi-agent", "ai", "llm", "workflow", "orchestration"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 dependencies = [
-    "pydantic>=2.0.0",          # Type safety and serialization throughout
-    "openai>=1.0.0",             # The default LLM provider
-    "typing-extensions>=4.0.0",  # Backports for Python type hints
-    "requests>=2.25.0",          # HTTP requests for tools
+    "pydantic>=2.0.0",
+    "openai==1.107.1",
+    "typing-extensions>=4.0.0",
+    "requests>=2.25.0",
 ]
 
-# OPTIONAL: Features are grouped so you install only what you need
-# This is critical for an educational framework — don't force someone
-# learning the agent loop to install Playwright (a browser automation library)
 [project.optional-dependencies]
-web   = ["fastapi>=0.100.0", "uvicorn>=0.20.0", "sse-starlette>=1.6.0"]
-rag   = ["chromadb>=0.4.0", "sentence-transformers>=2.0.0"]
-otel  = ["opentelemetry-sdk>=1.20.0", "opentelemetry-exporter-otlp-proto-http>=1.20.0"]
-mcp   = ["mcp>=1.0.0"]
-anthropic = ["anthropic>=0.30.0"]
-all   = ["forla[web,rag,otel,mcp,anthropic]"]
-dev   = ["forla[all]", "pytest>=7.0.0", "pytest-asyncio>=0.21.0", "mypy", "black", "isort"]
+persist = [
+    "sqlmodel>=0.0.16",
+    "aiosqlite>=0.20.0",
+]
+web = [
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "python-multipart>=0.0.6",
+    "sqlmodel>=0.0.16",
+    "aiosqlite>=0.20.0",
+]
+computer-use = [
+    "playwright>=1.40.0", 
+    "pillow>=10.0.0",
+    "beautifulsoup4>=4.12.0",
+]
+rag = [
+    "chromadb>=0.4.0",
+    "sentence-transformers>=2.2.0",
+]
+otel = [
+    "opentelemetry-api~=1.38.0",
+    "opentelemetry-sdk~=1.38.0",
+    "opentelemetry-exporter-otlp-proto-http~=1.38.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov",
+    "mypy",
+    "pyright",
+    "black",
+    "isort",
+    "flake8",
+    "poethepoet",
+]
+research = [
+    "httpx>=0.24.0",
+    "beautifulsoup4>=4.12.0",
+    "arxiv>=2.0.0",
+    "youtube-transcript-api>=0.6.0",
+    "html2text>=2020.1.16",
+]
+mcp = [
+    "mcp>=1.0.0",
+]
+anthropic = [
+    "anthropic>=0.70.0",
+]
+examples = [
+    "matplotlib",
+    "yfinance",
+    "python-dotenv",
+]
+frameworks = [
+    # LangChain + LangGraph (use langchain.agents.create_agent for agents)
+    "langchain>=1.1.0",
+    "langchain-openai>=1.1.0",
+    "langgraph>=1.0.0",
+    # Google ADK
+    "google-adk>=0.1.0",
+    # Microsoft Agent Framework
+    "agent-framework[azure]>=0.1.0",
+    # Anthropic Claude Agent SDK
+    "claude-agent-sdk>=0.1.0",
+    # Common dependencies
+    "python-dotenv",
+]
+all = [
+    "forla[web]",
+    "forla[computer-use]",
+    "forla[rag]",
+    "forla[research]",
+    "forla[mcp]",
+    "forla[anthropic]",
+    "forla[examples]",
+]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.scripts]
+forla = "forla.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/forla-ai/forla"
+Documentation = "https://github.com/forla-ai/forla#readme"
+Repository = "https://github.com/forla-ai/forla"
+
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forla"]
+exclude = [
+    "src/forla/webui/frontend",
+    "src/forla/webui/frontend/**/*"
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/README.md",
+    "/LICENSE",
+]
+exclude = [
+    "/src/forla/webui/frontend",
+    "/src/forla/webui/frontend/**/*"
+]
+
+[tool.pyright]
+include = ["src"]
+exclude = ["**/__pycache__"]
+reportMissingImports = true
+reportMissingTypeStubs = false
+pythonVersion = "3.10"
+typeCheckingMode = "strict"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.black]
+line-length = 88
+target-version = ['py310']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.poe.tasks]
+# Type checking
+mypy = "mypy src/ --show-error-codes --ignore-missing-imports"
+pyright = "pyright src/"
+
+# Testing
+test = "pytest tests/ -v"
+test-cov = "pytest tests/ --cov=src/forla --cov-report=term-missing"
+
+# Code quality
+format-black = "black src/ examples/ tests/"
+format-isort = "isort src/ examples/ tests/"
+lint = "flake8 src/ examples/ tests/"
+
+# Run all checks
+check = ["mypy", "pyright", "lint", "test"]

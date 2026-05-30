@@ -1,82 +1,43 @@
-from __future__ import annotations
+"""
+Base orchestrator implementation.
+
+This module provides the foundational BaseOrchestrator class following
+the PRD specification.
+"""
+
 import asyncio
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import AsyncGenerator, Dict, List, Optional, Sequence, Union
+from collections.abc import AsyncGenerator
+from typing import Any, Dict, List, Optional, Sequence, Union, cast
 
-from ..agents._base import BaseAgent
-from ..messages import Message, UserMessage, AssistantMessage
-from ..termination._base import BaseTermination
-from ..types import CancellationToken, Usage
-from ..messages import StopMessage
+from pydantic import BaseModel
 
-
-@dataclass
-class OrchestrationStartEvent:
-    """Emitted when an orchestration run begins."""
-    agent_names: List[str]
-    task_preview: str
-
-@dataclass
-class AgentTurnStartEvent:
-    """Emitted when an agent's turn begins."""
-    agent_name: str
-    iteration: int
-
-@dataclass
-class AgentTurnCompleteEvent:
-    """Emitted when an agent's turn completes."""
-    agent_name: str
-    iteration: int
-    message_count: int
+from .._cancellation_token import CancellationToken
+from .._component_config import ComponentBase
+from ..agents import BaseAgent
+from ..messages import Message, UserMessage
+from ..termination import BaseTermination
+from ..types import (
+    AgentExecutionCompleteEvent,
+    AgentExecutionStartEvent,
+    AgentResponse,
+    AgentSelectionEvent,
+    OrchestrationCompleteEvent,
+    OrchestrationEvent,
+    OrchestrationResponse,
+    OrchestrationStartEvent,
+    StopMessage,
+    Usage,
+)
 
 
-class OrchestrationResponse:
-    """The complete result of an orchestration run."""
-    
-    def __init__(
-        self,
-        messages: List[Message],
-        stop_message: StopMessage,
-        usage: Usage,
-    ):
-        self.messages = messages
-        self.stop_message = stop_message
-        self.usage = usage
-        
-        # Extract the final result: the last assistant message with content
-        self.final_result = ""
-        for msg in reversed(messages):
-            if isinstance(msg, AssistantMessage) and msg.content:
-                self.final_result = msg.content
-                break
+class BaseOrchestrator(ComponentBase[BaseModel], ABC):
+    """
+    Abstract base class for all orchestration patterns.
 
-    def __str__(self) -> str:
-        return (
-            f"OrchestrationResponse(\n"
-            f"  final_result='{self.final_result[:100]}...'\n"
-            f"  stop_reason='{self.stop_message.content}'\n"
-            f"  usage={self.usage}\n"
-            f")"
-        )
-
-
-class BaseOrchestrator(ABC):
-    """The base class for all multi-agent coordination patterns.
-    
-    WHAT IT PROVIDES (so subclasses don't have to):
-    - The complete orchestration loop (run_stream, run)
-    - Cancellation token support
-    - Delta-based termination checking (efficient)
-    - Usage aggregation across all agents
-    - Streaming of messages and events
-    - Error handling and graceful shutdown
-    
-    WHAT SUBCLASSES IMPLEMENT (the pattern-specific logic):
-    - select_next_agent(): Who speaks next?
-    - prepare_context_for_agent(): What does that agent see?
-    - update_shared_state(): How does the response update shared state?
+    Defines the core orchestration interface and universal orchestration loop
+    as specified in the PRD.
     """
 
     def __init__(
@@ -84,194 +45,462 @@ class BaseOrchestrator(ABC):
         agents: Sequence[BaseAgent],
         termination: BaseTermination,
         max_iterations: int = 50,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        example_tasks: Optional[List[str]] = None,
     ):
+        """
+        Initialize the orchestrator.
+
+        Args:
+            agents: List of agents available for orchestration
+            termination: Termination condition
+            max_iterations: Safety fallback for iterations
+            name: Optional name for the orchestrator
+            description: Optional description of the orchestrator's purpose
+            example_tasks: Optional list of example tasks to help users discover orchestrator capabilities
+        """
         if not agents:
-            raise ValueError("At least one agent is required for orchestration")
-        
-        # Validate that agent names are unique
-        names = [a.name for a in agents]
-        if len(names) != len(set(names)):
-            raise ValueError(
-                f"Agent names must be unique. Got: {names}. "
-                f"Duplicates: {[n for n in names if names.count(n) > 1]}"
-            )
-        
-        self.agents = list(agents)
+            raise ValueError("At least one agent is required")
+
+        self.agents = list(agents)  # Convert to list for internal use
         self.termination = termination
         self.max_iterations = max_iterations
-        
-        # Runtime state — reset before each run
+        self.name = name or self.__class__.__name__
+        self.description = description
+        self.example_tasks = example_tasks or []
+
+        # Runtime state
         self.shared_messages: List[Message] = []
-        self.iteration_count: int = 0
-        self._agent_usage: Dict[str, Usage] = {}
-
-    def _reset_for_run(self) -> None:
-        """Clear all state before starting a new orchestration run."""
-        self.shared_messages = []
         self.iteration_count = 0
-        self._agent_usage = {}
-        self.termination.reset()
+        self.start_time: Optional[float] = None
 
-    def _normalize_task(self, task) -> List[Message]:
-        """Convert any task format to a list of Messages."""
+        # Validate agent names are unique
+        names = [agent.name for agent in agents]
+        if len(names) != len(set(names)):
+            raise ValueError("Agent names must be unique")
+
+    async def run(
+        self,
+        task: Union[str, UserMessage, List[Message]],
+        cancellation_token: Optional[CancellationToken] = None,
+        persist: bool = False,
+    ) -> OrchestrationResponse:
+        """
+        Execute the orchestration pattern.
+
+        Args:
+            task: The task to orchestrate (same type as agent.run())
+            cancellation_token: Optional cancellation token
+            persist: If True, save the run to ~/.forla/ (DB
+                index + JSON file with full response data)
+
+        Returns:
+            OrchestrationResponse with messages, usage, and metadata
+        """
+        # Reset state for new run
+        self._reset_for_run()
+
+        final_result = None
+
+        try:
+            async for item in self.run_stream(task, cancellation_token):
+                if isinstance(item, OrchestrationResponse):
+                    final_result = item
+
+            result = final_result or self._create_fallback_result("No result produced")
+
+        except asyncio.CancelledError:
+            # Re-raise cancellation for caller to handle
+            raise
+        except Exception as e:
+            # Handle errors gracefully
+            elapsed_time = int((time.time() - (self.start_time or time.time())) * 1000)
+            result = OrchestrationResponse(
+                messages=self.shared_messages,
+                final_result=f"Orchestration failed: {str(e)}",
+                usage=Usage(duration_ms=elapsed_time),
+                stop_message=StopMessage(
+                    content=f"Error: {str(e)}", source="Exception"
+                ),
+                pattern_metadata=self._get_pattern_metadata(),
+            )
+
+        if persist:
+            try:
+                from ..store import get_default_store
+
+                store = get_default_store()
+                await store.save_orchestrator_run(self, result)
+            except Exception as e:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    f"Failed to persist orchestrator run: {e}"
+                )
+
+        return result
+
+    async def run_stream(
+        self,
+        task: Union[str, UserMessage, List[Message]],
+        cancellation_token: Optional[CancellationToken] = None,
+        verbose: bool = False,
+    ) -> AsyncGenerator[
+        Union[Message, OrchestrationEvent, OrchestrationResponse], None
+    ]:
+        """
+        Execute orchestration with streaming output.
+
+        Args:
+            task: The task to orchestrate (same type as agent.run())
+            cancellation_token: Optional cancellation token
+            verbose: If True, emit orchestration events; if False, only emit messages and results
+
+        Yields:
+            Messages, events (if verbose=True), and final OrchestrationResponse
+        """
+        # Reset state for new run
+        self._reset_for_run()
+        self.start_time = time.time()
+
+        # Initialize stop_message
+        stop_message: Optional[StopMessage] = None
+        # Track all messages streamed to user for accurate termination counting
+        streamed_messages: List[Message] = []
+        # Track position of last termination check for delta calculation
+        self._last_termination_check_count = 0
+        # Track agent usage statistics for aggregation
+        agent_usage_stats: List[Usage] = []
+
+        try:
+            # Emit orchestration start event
+            if verbose:
+                yield OrchestrationStartEvent(
+                    source="orchestrator",
+                    task=str(task),
+                    pattern=self.__class__.__name__,
+                )
+
+            # Normalize task to initial messages
+            initial_messages = self._normalize_task_to_messages(task)
+            self.shared_messages.extend(initial_messages)
+
+            # Yield initial messages
+            for message in initial_messages:
+                yield message
+                streamed_messages.append(message)
+
+            # Initialize termination with initial messages
+            self.termination.check(initial_messages)
+            # Update termination check counter after initial check
+            self._last_termination_check_count = len(streamed_messages)
+
+            # Universal orchestration loop
+            while self.iteration_count < self.max_iterations:
+                # Check for cancellation at the start of each iteration
+                if cancellation_token and cancellation_token.is_cancelled():
+                    raise asyncio.CancelledError()
+
+                # Check termination BEFORE processing next agent (but not on first iteration)
+                if self.iteration_count > 0 and self.termination.is_met():
+                    stop_message = StopMessage(
+                        content=self.termination.get_reason(),
+                        source=self.termination.__class__.__name__,
+                        metadata=self.termination.get_metadata(),
+                    )
+                    break
+
+                # 1. Select next agent (pattern-specific logic)
+                next_agent = await self.select_next_agent()
+
+                if verbose:
+                    yield AgentSelectionEvent(
+                        source="orchestrator",
+                        selected_agent=next_agent.name,
+                        selection_reason=f"Iteration {self.iteration_count + 1}",
+                    )
+
+                # 2. Prepare context for agent (pattern-specific)
+                context = await self.prepare_context_for_agent(next_agent)
+
+                context_size = len(context) if isinstance(context, list) else 1
+                if verbose:
+                    yield AgentExecutionStartEvent(
+                        source="orchestrator",
+                        executing_agent=next_agent.name,
+                        context_size=context_size,
+                    )
+
+                # 3. Execute agent with streaming support and cancellation
+                agent_messages = []
+                result: Optional[AgentResponse] = None
+
+                try:
+                    async for item in next_agent.run_stream(
+                        context, cancellation_token=cancellation_token, verbose=verbose
+                    ):
+                        # Check for cancellation during agent execution
+                        if cancellation_token and cancellation_token.is_cancelled():
+                            raise asyncio.CancelledError()
+
+                        # Type guard for Message (has content and role attributes)
+                        if hasattr(item, "content") and hasattr(item, "role"):
+                            # This is a Message - collect it but only forward non-user messages
+                            message_item = cast(Message, item)
+                            agent_messages.append(message_item)
+
+                            # Don't stream UserMessages - they're just context we sent to agents
+                            if not isinstance(message_item, UserMessage):
+                                yield message_item
+                                streamed_messages.append(message_item)
+                        elif hasattr(item, "messages") and hasattr(item, "usage"):
+                            # This is an AgentResponse - store it but don't forward
+                            result = cast(AgentResponse, item)
+                        # Note: Other agent events (AgentEvent) are not forwarded to maintain type safety
+
+                except asyncio.CancelledError:
+                    # Handle cancellation gracefully
+                    if verbose:
+                        yield AgentExecutionCompleteEvent(
+                            source="orchestrator",
+                            executing_agent=next_agent.name,
+                            success=False,
+                            message_count=len(agent_messages),
+                        )
+                    raise
+
+                # Check for cancellation again after agent execution
+                if cancellation_token and cancellation_token.is_cancelled():
+                    raise asyncio.CancelledError()
+
+                # Ensure we have a result
+                if result is None:
+                    # Create fallback result from collected messages
+                    result = AgentResponse(
+                        source=next_agent.name,
+                        messages=agent_messages,
+                        usage=Usage(duration_ms=0, llm_calls=0),
+                        finish_reason="completed_without_response",
+                    )
+
+                # Collect agent usage statistics for aggregation
+                agent_usage_stats.append(result.usage)
+
+                # Type guard: ensure result is AgentResponse
+                assert hasattr(
+                    result, "messages"
+                ), "Result must be AgentResponse with messages"
+
+                if verbose:
+                    yield AgentExecutionCompleteEvent(
+                        source="orchestrator",
+                        executing_agent=next_agent.name,
+                        success=True,
+                        message_count=len(result.messages),
+                    )
+
+                # 4. Update shared state (pattern-specific)
+                # result is guaranteed to be AgentResponse due to the assertion above
+                await self.update_shared_state(result)
+
+                # 5. Check termination with new messages streamed in this iteration
+                # Calculate messages streamed since last termination check
+                new_streamed_messages = streamed_messages[
+                    self._last_termination_check_count :
+                ]
+                self._last_termination_check_count = len(streamed_messages)
+
+                stop_message = self.termination.check(new_streamed_messages)
+                if stop_message:
+                    break
+
+                self.iteration_count += 1
+
+            # Handle max iterations reached
+            if self.iteration_count >= self.max_iterations and stop_message is None:
+                stop_message = StopMessage(
+                    content=f"Maximum iterations reached ({self.max_iterations})",
+                    source="MaxIterations",
+                )
+
+            # Ensure we always have a stop_message
+            if stop_message is None:
+                stop_message = StopMessage(
+                    content="Orchestration completed normally", source="Completion"
+                )
+
+            # Emit orchestration complete event
+            final_result = self._generate_final_result()
+            if verbose:
+                yield OrchestrationCompleteEvent(
+                    source="orchestrator",
+                    result=final_result,
+                    stop_reason=stop_message.content,
+                )
+
+            # Calculate usage statistics
+            elapsed_time = int((time.time() - self.start_time) * 1000)
+
+            # Aggregate usage from all agent executions
+            total_usage = Usage(duration_ms=elapsed_time)
+            for agent_usage in agent_usage_stats:
+                total_usage = total_usage + agent_usage
+
+            # Yield final OrchestrationResponse
+            orchestration_result = OrchestrationResponse(
+                messages=self.shared_messages,
+                final_result=final_result,
+                usage=total_usage,
+                stop_message=stop_message,
+                pattern_metadata=self._get_pattern_metadata(),
+            )
+            yield orchestration_result
+
+        except asyncio.CancelledError:
+            # Handle cancellation at orchestration level
+            elapsed_time = int((time.time() - (self.start_time or time.time())) * 1000)
+
+            if verbose:
+                yield OrchestrationCompleteEvent(
+                    source="orchestrator",
+                    result="Orchestration cancelled",
+                    stop_reason="Cancellation",
+                )
+
+            # Aggregate usage from all agent executions before cancellation
+            total_usage = Usage(duration_ms=elapsed_time)
+            for agent_usage in agent_usage_stats:
+                total_usage = total_usage + agent_usage
+
+            cancellation_result = OrchestrationResponse(
+                messages=self.shared_messages,
+                final_result="Orchestration was cancelled",
+                usage=total_usage,
+                stop_message=StopMessage(
+                    content="Orchestration cancelled", source="CancellationToken"
+                ),
+                pattern_metadata=self._get_pattern_metadata(),
+            )
+            yield cancellation_result
+
+            # Re-raise for proper cancellation handling
+            raise
+
+    @abstractmethod
+    async def select_next_agent(self) -> BaseAgent:
+        """Pattern-specific agent selection logic."""
+        pass
+
+    @abstractmethod
+    async def prepare_context_for_agent(
+        self, agent: BaseAgent
+    ) -> Union[str, UserMessage, List[Message]]:
+        """Pattern-specific context preparation."""
+        pass
+
+    @abstractmethod
+    async def update_shared_state(self, result: AgentResponse) -> None:
+        """Pattern-specific state update after agent execution."""
+        pass
+
+    def _normalize_task_to_messages(
+        self, task: Union[str, UserMessage, List[Message]]
+    ) -> List[Message]:
+        """Convert task input to list of messages."""
         if isinstance(task, str):
             return [UserMessage(content=task, source="user")]
         elif isinstance(task, UserMessage):
             return [task]
         elif isinstance(task, list):
             return task
-        return [UserMessage(content=str(task), source="user")]
+        else:
+            # Fallback for any other message type
+            return (
+                [task]
+                if hasattr(task, "content")
+                else [UserMessage(content=str(task), source="user")]
+            )
 
-    @abstractmethod
-    async def select_next_agent(self) -> BaseAgent:
-        """Choose which agent runs next. Pattern-specific logic."""
-        pass
-
-    @abstractmethod
-    async def prepare_context_for_agent(self, agent: BaseAgent) -> List[Message]:
-        """Build the message list this agent will receive. Pattern-specific."""
-        pass
-
-    @abstractmethod
-    async def update_shared_state(
-        self, agent: BaseAgent, response: "AgentResponse"
-    ) -> None:
-        """Update shared state after an agent's turn. Pattern-specific."""
-        pass
-
-    async def run_stream(
+    def _extract_new_messages(
         self,
-        task: Union[str, UserMessage, List[Message]],
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> AsyncGenerator:
-        """The universal orchestration loop. All patterns share this."""
-        self._reset_for_run()
-        start_time = time.time()
-        stop_message: Optional[StopMessage] = None
-        streamed_messages: List[Message] = []
-
-        # Emit start event
-        yield OrchestrationStartEvent(
-            agent_names=[a.name for a in self.agents],
-            task_preview=str(task)[:100],
-        )
-
-        # ── Initialize with the task ──────────────────────────────────────
-        initial_messages = self._normalize_task(task)
-        self.shared_messages.extend(initial_messages)
-
-        for msg in initial_messages:
-            yield msg
-            streamed_messages.append(msg)
-
-        # Check termination on initial messages (e.g., task already contains "DONE")
-        stop_message = self.termination.check(initial_messages)
-
-        # ── Main orchestration loop ───────────────────────────────────────
-        while self.iteration_count < self.max_iterations and not stop_message:
-
-            # Cancel check
-            if cancellation_token and cancellation_token.is_cancelled():
-                stop_message = StopMessage(
-                    content="Orchestration cancelled by user",
-                    source="CancellationToken",
-                )
-                break
-
-            # 1. Select the next agent (pattern-specific)
-            next_agent = await self.select_next_agent()
-
-            yield AgentTurnStartEvent(
-                agent_name=next_agent.name,
-                iteration=self.iteration_count,
+        agent_messages: List[Message],
+        sent_context: Union[str, UserMessage, List[Message]],
+    ) -> List[Message]:
+        """Extract only new messages from agent response, excluding the context we sent."""
+        # If we sent a list context, agent should return context + new messages
+        if isinstance(sent_context, list):
+            context_len = len(sent_context)
+            return (
+                agent_messages[context_len:]
+                if len(agent_messages) > context_len
+                else []
             )
+        else:
+            # If we sent str/UserMessage, agent returns [UserMessage, ...new messages]
+            return agent_messages[1:] if len(agent_messages) > 1 else []
 
-            # 2. Prepare context for this agent (pattern-specific)
-            context_messages = await self.prepare_context_for_agent(next_agent)
+    def _reset_for_run(self) -> None:
+        """Reset orchestrator state for new run."""
+        self.shared_messages = []
+        self.iteration_count = 0
+        self.start_time = None
+        self.termination.reset()
+        self._last_termination_check_count = 0
 
-            # 3. Execute the agent with the prepared context
-            from ..types import AgentResponse
-            agent_new_messages = []
-            agent_response: Optional[AgentResponse] = None
+    def _generate_final_result(self) -> str:
+        """Generate final result summary."""
+        if not self.shared_messages:
+            return "No messages generated"
 
-            try:
-                async for item in next_agent.run_stream(context_messages, cancellation_token):
-                    if isinstance(item, AgentResponse):
-                        agent_response = item
-                    elif isinstance(item, Message):
-                        # Only stream non-UserMessage messages (avoid echoing the context)
-                        if not isinstance(item, UserMessage):
-                            agent_new_messages.append(item)
-                            streamed_messages.append(item)
-                            yield item
-            except asyncio.CancelledError:
-                stop_message = StopMessage(
-                    content="Agent execution cancelled",
-                    source="CancellationToken",
-                )
-                break
-            except Exception as e:
-                stop_message = StopMessage(
-                    content=f"Agent '{next_agent.name}' raised an error: {e}",
-                    source="AgentError",
-                )
-                break
+        # Find the last assistant message
+        for message in reversed(self.shared_messages):
+            if hasattr(message, "role") and message.role == "assistant":
+                return message.content
 
-            if agent_response is None:
-                break
+        return "Task completed"
 
-            # 4. Update shared state (pattern-specific)
-            await self.update_shared_state(next_agent, agent_response)
+    def get_agent_capabilities_summary(self) -> str:
+        """Get agent capabilities summary for LLM consumption."""
+        summary_lines = []
+        for agent in self.agents:
+            line = f"- {agent.name}: {agent.description}"
 
-            # Track usage per agent
-            if next_agent.name not in self._agent_usage:
-                self._agent_usage[next_agent.name] = Usage()
-            self._agent_usage[next_agent.name] = (
-                self._agent_usage[next_agent.name] + agent_response.usage
-            )
+            # Add tool information if available
+            if hasattr(agent, "tools") and agent.tools:
+                tool_names = []
+                for tool in agent.tools:
+                    if hasattr(tool, "name"):
+                        tool_names.append(tool.name)
+                    elif hasattr(tool, "__name__"):
+                        tool_names.append(tool.__name__)
+                    else:
+                        tool_names.append(str(tool)[:20])
 
-            yield AgentTurnCompleteEvent(
-                agent_name=next_agent.name,
-                iteration=self.iteration_count,
-                message_count=len(agent_new_messages),
-            )
+                if tool_names:
+                    line += f" | Tools: {', '.join(tool_names)}"
 
-            # 5. Check termination on the delta (only new messages since last check)
-            # This is more efficient than checking the full history each time
-            checkpoint = len(streamed_messages) - len(agent_new_messages)
-            delta_messages = streamed_messages[checkpoint:]
-            stop_message = self.termination.check(delta_messages)
+            summary_lines.append(line)
 
-            self.iteration_count += 1
+        return "\n".join(summary_lines)
 
-        # ── Handle reaching max_iterations ──────────────────────────────
-        if not stop_message:
-            stop_message = StopMessage(
-                content=f"Maximum iterations reached ({self.max_iterations})",
-                source="MaxIterations",
-            )
+    def _get_pattern_metadata(self) -> Dict[str, Any]:
+        """Get pattern-specific metadata for result."""
+        return {
+            "pattern": self.__class__.__name__,
+            "iterations_completed": self.iteration_count,
+            "agents_count": len(self.agents),
+            "message_count": len(self.shared_messages),
+        }
 
-        # ── Aggregate total usage ────────────────────────────────────────
-        total_usage = Usage(
-            duration_ms=int((time.time() - start_time) * 1000)
-        )
-        for agent_usage in self._agent_usage.values():
-            total_usage = total_usage + agent_usage
+    def _create_fallback_result(self, reason: str) -> OrchestrationResponse:
+        """Create fallback result for error cases."""
+        elapsed_time = int((time.time() - (self.start_time or time.time())) * 1000)
 
-        yield OrchestrationResponse(
+        return OrchestrationResponse(
             messages=self.shared_messages,
-            stop_message=stop_message,
-            usage=total_usage,
+            final_result=reason,
+            usage=Usage(duration_ms=elapsed_time),
+            stop_message=StopMessage(content=reason, source="Fallback"),
+            pattern_metadata=self._get_pattern_metadata(),
         )
-
-    async def run(
-        self,
-        task,
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> OrchestrationResponse:
-        """Run orchestration and return only the final result."""
-        result = None
-        async for item in self.run_stream(task, cancellation_token):
-            if isinstance(item, OrchestrationResponse):
-                result = item
-        return result
