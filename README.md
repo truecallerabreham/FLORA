@@ -1,36 +1,56 @@
-# Forla
+<div align="center">
+  <img src="docs/assets/forla-hero.svg" alt="Forla architecture banner" width="100%" />
 
-Forla is a compact, async-first Python framework for building single-agent, multi-agent, and workflow-based AI systems from first principles.
+  <h1>Forla</h1>
 
-It is intentionally small enough to understand, but complete enough to demonstrate the core architecture behind modern agent products: typed messages, model clients, tool execution, memory, middleware, orchestration, termination, workflows, evaluation, and a web UI surface.
+  <p>
+    <strong>A clean, async-first framework for building transparent AI agents, multi-agent systems, and deterministic workflows in Python.</strong>
+  </p>
 
-## Why Forla
+  <p>
+    <a href="#quick-start">Quick Start</a>
+    |
+    <a href="#autonomous-coding-agent">Coding Agent</a>
+    |
+    <a href="#architecture">Architecture</a>
+    |
+    <a href="#comparison">Comparison</a>
+  </p>
 
-Most agent frameworks hide the loop. Forla exposes it.
+  <p>
+    <img alt="Python 3.11+" src="https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" />
+    <img alt="Async first" src="https://img.shields.io/badge/runtime-async--first-14B8A6?style=for-the-badge" />
+    <img alt="Streaming agents" src="https://img.shields.io/badge/agents-streaming-60A5FA?style=for-the-badge" />
+    <img alt="Tests" src="https://img.shields.io/badge/tests-12%20passed-22C55E?style=for-the-badge" />
+  </p>
+</div>
 
-An agent in Forla is the composition of three things:
+---
+
+Forla is built around a simple idea: agent systems become easier to trust when the runtime is visible.
+
+Instead of hiding everything behind a giant abstraction, Forla gives you the core pieces directly: typed messages, model clients, tools, memory, middleware, orchestration, termination conditions, workflows, evaluation, and a web UI surface. The result is a framework that is small enough to understand and complete enough to demonstrate serious multi-agent engineering patterns.
 
 ```text
 Agent = model reasoning + tool execution + memory
 ```
 
-That simple contract makes it easier to inspect behavior, test components independently, and teach or extend the system without fighting a large abstraction stack.
+**Built for:** learning, technical interviews, agent runtime experiments, portfolio projects, internal prototypes, and engineers who want to understand what is happening inside the loop.
 
-## Highlights
+## What Makes It Feel Different
 
-- Async-first execution for LLM calls, tool calls, workflows, and orchestration.
-- Streaming-first agents: `run_stream()` yields messages and events; `run()` is the convenience wrapper.
-- Typed message protocol for system, user, assistant, tool, and stop messages.
-- Tool abstraction with JSON-schema conversion for function calling.
-- Agent-managed memory through a sandboxed file memory tool.
-- Application-managed memory through pluggable `BaseMemory` implementations.
-- Middleware hooks for logging, security checks, policy gates, and observability.
-- Multi-agent orchestration with round-robin and AI-driven routing patterns.
-- Deterministic workflow engine for graph-like business logic.
-- Evaluation runner and LLM judge primitives.
-- Example applications, including an autonomous software-engineering agent team.
+| Capability | What Forla gives you |
+|---|---|
+| Transparent agent loop | `run_stream()` is the primitive; `run()` is just the final-response wrapper. |
+| Typed protocol | System, user, assistant, tool, and stop messages are first-class objects. |
+| Tool execution | Plain functions and custom tools become LLM-callable JSON-schema tools. |
+| Persistent memory | Agents can read and write sandboxed markdown memory across sessions. |
+| Middleware | Intercept model calls and tool calls for logging, safety, policy, and observability. |
+| Multi-agent orchestration | Coordinate specialists with round-robin or AI-driven routing patterns. |
+| Deterministic workflows | Use graph-style `FunctionStep` workflows when agents are the wrong tool. |
+| Evaluation | Run task suites and use an LLM judge for natural-language outputs. |
 
-## Installation
+## Install
 
 ```bash
 python -m venv .venv
@@ -38,7 +58,7 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-On macOS or Linux:
+macOS or Linux:
 
 ```bash
 python -m venv .venv
@@ -46,13 +66,13 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-For OpenAI-backed examples, set:
+For OpenAI-backed examples:
 
 ```bash
 set OPENAI_API_KEY=your_api_key_here
 ```
 
-On macOS or Linux:
+macOS or Linux:
 
 ```bash
 export OPENAI_API_KEY=your_api_key_here
@@ -69,7 +89,7 @@ from forla.tools import ThinkTool
 
 
 async def main():
-    client = OpenAIChatCompletionClient(
+    model = OpenAIChatCompletionClient(
         model="gpt-4.1-mini",
         api_key=os.getenv("OPENAI_API_KEY"),
     )
@@ -78,11 +98,11 @@ async def main():
         name="assistant",
         description="A concise technical assistant",
         instructions="Answer clearly. Use tools when useful.",
-        model_client=client,
+        model_client=model,
         tools=[ThinkTool()],
     )
 
-    response = await agent.run("Explain async agents in one paragraph.")
+    response = await agent.run("Explain async AI agents in one paragraph.")
     print(response.content)
     print(response.usage)
 
@@ -91,20 +111,39 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-## Core Concepts
+## Autonomous Coding Agent
 
-| Concept | Purpose | Key classes |
-|---|---|---|
-| Messages | Shared protocol for all model, tool, and orchestration communication | `UserMessage`, `AssistantMessage`, `ToolMessage`, `StopMessage` |
-| Model clients | Provider abstraction for LLM calls | `BaseChatCompletionClient`, `OpenAIChatCompletionClient` |
-| Tools | Structured actions an agent can call | `BaseTool`, `FunctionTool`, `ThinkTool`, `MemoryTool` |
-| Agent memory | Persistent agent-managed knowledge | `MemoryTool` |
-| App memory | Developer-managed context injection | `BaseMemory`, `ListMemory` |
-| Middleware | Intercept model and tool calls | `BaseMiddleware`, `LoggingMiddleware`, `SecurityMiddleware` |
-| Orchestration | Coordinate multiple agents | `RoundRobinOrchestrator`, `AIOrchestrator` |
-| Termination | Stop runs safely and predictably | `MaxMessageTermination`, `TextMentionTermination`, `TokenBudgetTermination` |
-| Workflow | Deterministic graph execution | `Workflow`, `FunctionStep`, `WorkflowRunner` |
-| Evaluation | Score agent outputs | `EvaluationRunner`, `LLMJudge` |
+The flagship example is a software-engineering multi-agent team inspired by the patterns behind tools like GitHub Copilot, Cursor, and Claude Code:
+
+```bash
+python examples/05_autonomous_coding_agent.py
+```
+
+Or run it against a disposable workspace:
+
+```bash
+python examples/05_autonomous_coding_agent.py ^
+  --workspace .\scratch\agent-workspace ^
+  "Add validation, update tests, run verification, and summarize the diff."
+```
+
+It demonstrates:
+
+| Pattern | Implementation |
+|---|---|
+| Agent + tools + memory | `Agent`, `WorkspaceTool`, `CommandTool`, `MemoryTool` |
+| Metacognition | `ThinkTool` forces explicit planning before action. |
+| Surgical edits | `workspace.str_replace` rejects ambiguous edits. |
+| Persistent task state | `/memories/current_task.md` uses markdown checkboxes. |
+| Verification loop | `run_command` allows tests, compile checks, lint, and diff inspection. |
+| Explicit completion | `TaskStatusTool` prevents premature termination. |
+| Multi-agent review | Architect, implementer, and reviewer collaborate until `SHIP_READY`. |
+
+The workflow encoded in the prompt is intentionally concrete:
+
+```text
+Memory check -> Planning -> Execution -> Learning -> Completion
+```
 
 ## Architecture
 
@@ -121,15 +160,52 @@ Agent.run_stream()
    |
    +-- call model through middleware
    |
-   +-- if model requests tools
+   +-- if the model requests tools
    |     +-- execute tools through middleware
    |     +-- append ToolMessage results
-   |     +-- loop
+   |     +-- continue the loop
    |
-   +-- if model returns text
+   +-- if the model returns text
          +-- update memory
          +-- emit AgentResponse
 ```
+
+## Framework Surface
+
+| Layer | Purpose | Key classes |
+|---|---|---|
+| Messages | Shared communication protocol | `UserMessage`, `AssistantMessage`, `ToolMessage`, `StopMessage` |
+| Models | Provider abstraction | `BaseChatCompletionClient`, `OpenAIChatCompletionClient` |
+| Agents | Reasoning loop | `Agent`, `BaseAgent`, `AgentResponse` |
+| Tools | Structured actions | `BaseTool`, `FunctionTool`, `ThinkTool`, `TaskStatusTool`, `MemoryTool` |
+| Memory | Context and persistent knowledge | `AgentContext`, `BaseMemory`, `ListMemory` |
+| Middleware | Runtime interception | `BaseMiddleware`, `LoggingMiddleware`, `SecurityMiddleware` |
+| Orchestration | Multi-agent coordination | `RoundRobinOrchestrator`, `AIOrchestrator` |
+| Termination | Safe stopping | `MaxMessageTermination`, `TextMentionTermination`, `TokenBudgetTermination` |
+| Workflows | Deterministic execution | `Workflow`, `FunctionStep`, `WorkflowRunner` |
+| Evaluation | Quality measurement | `EvaluationRunner`, `LLMJudge` |
+
+## Examples
+
+| Example | Focus |
+|---|---|
+| `examples/01_basic_agent.py` | Single-agent model call |
+| `examples/02_poet_critic.py` | Multi-agent collaboration |
+| `examples/03_web_app.py` | FastAPI web app integration |
+| `examples/04_full_system.py` | Workflow, orchestration, memory, and middleware |
+| `examples/05_autonomous_coding_agent.py` | Autonomous software-engineering agent team |
+
+## Comparison
+
+Forla is not positioned as a massive production platform. It is the readable, inspectable agent framework you can study, modify, and explain end to end.
+
+| Project | Primary orientation | Strong fit | Forla difference |
+|---|---|---|---|
+| **Forla** | Transparent agent runtime | Learning, portfolios, prototypes, custom runtimes | Small codebase, explicit loop, easy to inspect. |
+| [LangGraph](https://www.langchain.com/langgraph) | Stateful graph runtime | Durable graph-based agent apps | Forla starts with simpler primitives before graph runtime complexity. |
+| [Microsoft AutoGen / Agent Framework](https://learn.microsoft.com/agent-framework/overview/agent-framework-overview) | Enterprise multi-agent workflows | Microsoft ecosystem and production agent workflows | Forla is smaller and easier to reason about line by line. |
+| [CrewAI](https://docs.crewai.com/en/index) | Crews, flows, role-based automation | Fast team-style agent setup | Forla exposes the lower-level building blocks behind those patterns. |
+| Direct model SDK | Raw LLM calls | Simple generation or basic tool calling | Forla adds memory, middleware, orchestration, termination, workflows, and eval. |
 
 ## Project Layout
 
@@ -148,65 +224,6 @@ src/forla/
 examples/          Runnable demos
 tests/             Unit and integration tests
 ```
-
-## Examples
-
-| File | What it demonstrates |
-|---|---|
-| `examples/01_basic_agent.py` | A basic single agent with an OpenAI-compatible model client |
-| `examples/02_poet_critic.py` | Multi-agent writer and critic collaboration |
-| `examples/03_web_app.py` | FastAPI web app integration |
-| `examples/04_full_system.py` | Workflow, orchestration, memory, and middleware together |
-| `examples/05_autonomous_coding_agent.py` | A software-engineering agent team with tools, memory, planning, execution, and evaluation |
-
-Run the coding-agent showcase:
-
-```bash
-python examples/05_autonomous_coding_agent.py
-```
-
-Or point it at a disposable workspace:
-
-```bash
-python examples/05_autonomous_coding_agent.py ^
-  --workspace .\scratch\agent-workspace ^
-  "Add input validation, update tests, run verification, and summarize the diff."
-```
-
-## Autonomous Coding Agent Showcase
-
-The coding-agent example models the pattern used by modern AI coding tools: a model-driven agent loop combined with precise tools and persistent memory.
-
-It includes:
-
-- Sandboxed file operations: `tree`, `view`, `create`, and `str_replace`.
-- Command execution with a conservative allowlist for tests and inspections.
-- Persistent markdown memory under `/memories`.
-- `ThinkTool` for explicit metacognition.
-- `TaskStatusTool` for explicit completion checks.
-- A five-phase engineering workflow:
-  1. Memory check
-  2. Planning
-  3. Execution
-  4. Learning
-  5. Completion
-- Markdown task tracking in `/memories/current_task.md`.
-- Multi-agent roles: architect, implementer, and reviewer.
-- Termination that requires an explicit `SHIP_READY` signal from review.
-
-This is the example to show when you want to demonstrate that Forla can model real software-engineering agent behavior, not just toy chat loops.
-
-## Positioning
-
-Forla is not trying to replace every production agent platform. It is designed to be readable, hackable, and educational while still covering the essential runtime patterns.
-
-| Project | Primary orientation | Best fit | Forla difference |
-|---|---|---|---|
-| Forla | Small async framework with transparent internals | Learning, prototypes, interviews, custom agent runtimes | Minimal codebase, explicit loop, easy to inspect and extend |
-| [LangGraph](https://www.langchain.com/langgraph) | Low-level orchestration/runtime for stateful agents | Durable graph-based agent applications | Forla favors simpler primitives before adding graph/runtime complexity |
-| [Microsoft AutoGen / Agent Framework](https://learn.microsoft.com/agent-framework/overview/agent-framework-overview) | Multi-agent applications and enterprise agent workflows | Conversational multi-agent systems and Microsoft ecosystem work | Forla is smaller and easier to reason about end to end |
-| [CrewAI](https://docs.crewai.com/en/index) | Crews, flows, and multi-agent automation | Role-based automation and fast team-style agent setup | Forla exposes the lower-level building blocks behind those patterns |
-| Direct model SDK | Raw LLM calls | Simple generation or tool-calling tasks | Forla adds memory, middleware, orchestration, termination, and workflows |
 
 ## Quality Bar
 
@@ -230,21 +247,17 @@ Current local verification:
 
 The skipped tests require `OPENAI_API_KEY`.
 
-## Security Notes
+## Security Model
 
-Agents that can read files or run commands need boundaries.
+Agent tools are powerful, so Forla examples show boundaries:
 
-Forla demonstrates the following controls:
-
-- Tool interfaces return structured success/error results instead of crashing the agent loop.
+- Tools return structured `ToolResult` objects instead of crashing the loop.
 - `MemoryTool` validates paths to prevent directory traversal.
-- The coding-agent example keeps file operations inside a configured workspace.
-- Command execution in the coding-agent example uses an allowlist and rejects shell metacharacters.
-- `SecurityMiddleware` shows how model-call inputs can be blocked before reaching the LLM.
+- The coding-agent workspace tool keeps edits inside a configured sandbox.
+- The command tool uses an allowlist and rejects shell metacharacters.
+- `SecurityMiddleware` can block suspicious model-call inputs before they reach the LLM.
 
-Treat the examples as engineering patterns, not permission to run agents against sensitive systems without review.
-
-## Roadmap Ideas
+## Roadmap
 
 - Pydantic v2 `ConfigDict` cleanup.
 - More model providers.
@@ -256,12 +269,12 @@ Treat the examples as engineering patterns, not permission to run agents against
 
 ## Contributing
 
-Keep contributions small, typed, and easy to test.
+Good contributions are focused, typed, and testable.
 
-Good pull requests should include:
+Please include:
 
 - A clear problem statement.
-- Focused implementation.
+- A small implementation.
 - Tests or an example.
 - No unrelated rewrites.
 
